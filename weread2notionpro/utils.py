@@ -2,8 +2,11 @@ import calendar
 from datetime import datetime
 from datetime import timedelta
 import hashlib
+import os
 import re
-from config import (
+import requests
+import base64
+from weread2notionpro.config  import (
     RICH_TEXT,
     URL,
     RELATION,
@@ -111,31 +114,23 @@ def get_quote(content):
     }
 
 
-def get_callout(content, style, colorStyle, reviewId):
-    # 根据不同的划线样式设置不同的emoji 直线type=0 背景颜色是1 波浪线是2
-    emoji = "〰️"
-    if style == 0:
-        emoji = "💡"
-    elif style == 1:
-        emoji = "⭐"
-    # 如果reviewId不是空说明是笔记
-    if reviewId != None:
-        emoji = "✍️"
+def get_block(content,type,show_color, style, colorStyle, reviewId):
     color = "default"
-    # 根据划线颜色设置文字的颜色
-    if colorStyle == 1:
-        color = "red"
-    elif colorStyle == 2:
-        color = "purple"
-    elif colorStyle == 3:
-        color = "blue"
-    elif colorStyle == 4:
-        color = "green"
-    elif colorStyle == 5:
-        color = "yellow"
-    return {
-        "type": "callout",
-        "callout": {
+    if show_color:
+        # 根据划线颜色设置文字的颜色
+        if colorStyle == 1:
+            color = "red"
+        elif colorStyle == 2:
+            color = "purple"
+        elif colorStyle == 3:
+            color = "blue"
+        elif colorStyle == 4:
+            color = "green"
+        elif colorStyle == 5:
+            color = "yellow"
+    block = {
+        "type": type,
+        type: {
             "rich_text": [
                 {
                     "type": "text",
@@ -144,10 +139,21 @@ def get_callout(content, style, colorStyle, reviewId):
                     },
                 }
             ],
-            "icon": {"emoji": emoji},
             "color": color,
         },
     }
+    if(type=="callout"):
+        # 根据不同的划线样式设置不同的emoji 直线type=0 背景颜色是1 波浪线是2
+        emoji = "〰️"
+        if style == 0:
+            emoji = "💡"
+        elif style == 1:
+            emoji = "⭐"
+        # 如果reviewId不是空说明是笔记
+        if reviewId != None:
+            emoji = "✍️"
+        block[type]["icon"] = {"emoji": emoji}
+    return block
 
 
 def get_rich_text_from_result(result, name):
@@ -213,50 +219,48 @@ def get_first_and_last_day_of_week(date):
 
     return first_day_of_week, last_day_of_week
 
-
-def get_properties(dict1, dict2, dict3):
+def get_properties(dict1, dict2):
     properties = {}
-    for key, value in dict2.items():
-        property_type = dict3.get(value)
-        property_value = dict1.get(key)
-        if property_value == None:
+    for key, value in dict1.items():
+        type = dict2.get(key)
+        if value == None:
             continue
         property = None
-        if property_type == TITLE:
+        if type == TITLE:
             property = {
-                "title": [
-                    {"type": "text", "text": {"content": property_value[:MAX_LENGTH]}}
+                "title": [{"type": "text", "text": {"content": value[:MAX_LENGTH]}}]
+            }
+        elif type == RICH_TEXT:
+            property = {
+                "rich_text": [{"type": "text", "text": {"content": value[:MAX_LENGTH]}}]
+            }
+        elif type == NUMBER:
+            property = {"number": value}
+        elif type == STATUS:
+            property = {"status": {"name": value}}
+        elif type == FILES:
+            property = {
+                "files": [
+                    {"type": "external", "name": "Cover", "external": {"url": value}}
                 ]
             }
-        elif property_type == RICH_TEXT:
-            property = {
-                "rich_text": [
-                    {"type": "text", "text": {"content": property_value[:MAX_LENGTH]}}
-                ]
-            }
-        elif property_type == NUMBER:
-            property = {"number": property_value}
-        elif property_type == STATUS:
-            property = {"status": {"name": property_value}}
-        elif property_type == FILES:
-            property = {"files": [{"type": "external", "name": "Cover", "external": {"url": property_value}}]}
-        elif property_type == DATE:
+        elif type == DATE:
             property = {
                 "date": {
                     "start": pendulum.from_timestamp(
-                        property_value, tz="Asia/Shanghai"
+                        value, tz="Asia/Shanghai"
                     ).to_datetime_string(),
                     "time_zone": "Asia/Shanghai",
                 }
             }
-        elif property_type==URL:
-            property = {"url": property_value}        
-        elif property_type==SELECT:
-            property = {"select": {"name": property_value}}
-        elif property_type == RELATION:
-            property = {"relation": [{"id": id} for id in property_value]}
+        elif type == URL:
+            property = {"url": value}
+        elif type == SELECT:
+            property = {"select": {"name": value}}
+        elif type == RELATION:
+            property = {"relation": [{"id": id} for id in value]}
         if property:
-            properties[value] = property
+            properties[key] = property
     return properties
 
 
@@ -267,7 +271,7 @@ def get_property_value(property):
     if content is None:
         return None
     if type == "title" or type == "rich_text":
-        if(len(content)>0):
+        if len(content) > 0:
             return content[0].get("plain_text")
         else:
             return None
@@ -285,46 +289,7 @@ def get_property_value(property):
         return content
 
 
-def calculate_book_str_id(book_id):
-    md5 = hashlib.md5()
-    md5.update(book_id.encode("utf-8"))
-    digest = md5.hexdigest()
-    result = digest[0:3]
-    code, transformed_ids = transform_id(book_id)
-    result += code + "2" + digest[-2:]
 
-    for i in range(len(transformed_ids)):
-        hex_length_str = format(len(transformed_ids[i]), "x")
-        if len(hex_length_str) == 1:
-            hex_length_str = "0" + hex_length_str
-
-        result += hex_length_str + transformed_ids[i]
-
-        if i < len(transformed_ids) - 1:
-            result += "g"
-
-    if len(result) < 20:
-        result += digest[0 : 20 - len(result)]
-    md5 = hashlib.md5()
-    md5.update(result.encode("utf-8"))
-    result += md5.hexdigest()[0:3]
-    return result
-
-def transform_id(book_id):
-    id_length = len(book_id)
-    if re.match("^\d*$", book_id):
-        ary = []
-        for i in range(0, id_length, 9):
-            ary.append(format(int(book_id[i : min(i + 9, id_length)]), "x"))
-        return "3", ary
-
-    result = ""
-    for i in range(id_length):
-        result += format(ord(book_id[i]), "x")
-    return "4", [result]
-
-def get_weread_url(book_id):
-    return f"https://weread.qq.com/web/reader/{calculate_book_str_id(book_id)}"
 
 def str_to_timestamp(date):
     if date == None:
@@ -332,3 +297,69 @@ def str_to_timestamp(date):
     dt = pendulum.parse(date)
     # 获取时间戳
     return int(dt.timestamp())
+
+
+upload_url = "https://wereadassets.malinkang.com/"
+
+
+def upload_image(folder_path, filename, file_path):
+    # 将文件内容编码为Base64
+    with open(file_path, "rb") as file:
+        content_base64 = base64.b64encode(file.read()).decode("utf-8")
+
+    # 构建请求的JSON数据
+    data = {"file": content_base64, "filename": filename, "folder": folder_path}
+
+    response = requests.post(upload_url, json=data)
+
+    if response.status_code == 200:
+        print("File uploaded successfully.")
+        return response.text
+    else:
+        return None
+
+
+def url_to_md5(url):
+    # 创建一个md5哈希对象
+    md5_hash = hashlib.md5()
+
+    # 对URL进行编码，准备进行哈希处理
+    # 默认使用utf-8编码
+    encoded_url = url.encode("utf-8")
+
+    # 更新哈希对象的状态
+    md5_hash.update(encoded_url)
+
+    # 获取十六进制的哈希表示
+    hex_digest = md5_hash.hexdigest()
+
+    return hex_digest
+
+
+def download_image(url, save_dir="cover"):
+    # 确保目录存在，如果不存在则创建
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    file_name = url_to_md5(url) + ".jpg"
+    save_path = os.path.join(save_dir, file_name)
+
+    # 检查文件是否已经存在，如果存在则不进行下载
+    if os.path.exists(save_path):
+        print(f"File {file_name} already exists. Skipping download.")
+        return save_path
+
+    response = requests.get(url, stream=True)
+    if response.status_code == 200:
+        with open(save_path, "wb") as file:
+            for chunk in response.iter_content(chunk_size=128):
+                file.write(chunk)
+        print(f"Image downloaded successfully to {save_path}")
+    else:
+        print(f"Failed to download image. Status code: {response.status_code}")
+    return save_path
+
+
+
+def get_embed(url):
+    return {"type": "embed", "embed": {"url": url}}
